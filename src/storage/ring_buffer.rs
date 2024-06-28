@@ -44,6 +44,61 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
             length: 0,
         }
     }
+    pub fn try_defrag(&mut self) -> bool
+    where
+        T: Copy,
+    {
+        if self.length == 0 {
+            self.read_at = 0;
+            return true;
+        }
+        if self.read_at == 0 {
+            return true;
+        }
+        let end_at = self.read_at + self.length;
+        if end_at <= self.storage.len() {
+            self.storage.copy_within(self.read_at..end_at, 0);
+            self.read_at = 0;
+            return true;
+        } else {
+            let wrap_len = end_at - self.storage.len();
+            let empty = self.read_at - wrap_len;
+            if wrap_len <= empty {
+                self.storage.copy_within(0..wrap_len, self.length - wrap_len);
+                self.storage.copy_within(self.read_at.., 0);
+                self.read_at = 0;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn defrag_expensive<'b>(&mut self, slice: &mut ManagedSlice<'b, T>)
+    where
+        T: Copy,
+    {
+        if self.try_defrag() {
+            return;
+        }
+        let first_slice_start = 0;
+        let first_slice_end = self.read_at + self.length - self.storage.len();
+        let first_slice_len = first_slice_end - first_slice_start;
+        let second_slice_start = self.read_at;
+        let second_slice_end = self.storage.len();
+        let second_slice_len = second_slice_end - second_slice_start;
+
+        if second_slice_len <= slice.len() {
+            slice[..second_slice_len].copy_from_slice(&self.storage[second_slice_start..second_slice_end]);
+            self.storage.copy_within(first_slice_start..first_slice_end, second_slice_len);
+            self.storage[..second_slice_len].copy_from_slice(&slice[..second_slice_len]);
+            self.read_at = 0;
+        } else if first_slice_len <= slice.len() {
+            slice[..first_slice_len].copy_from_slice(&self.storage[first_slice_start..first_slice_end]);
+            self.storage.copy_within(second_slice_start..second_slice_end, 0);
+            self.storage[second_slice_len..second_slice_len + first_slice_len].copy_from_slice(&slice[..first_slice_len]);
+            self.read_at = 0;
+        }
+    }
 
     /// Clear the ring buffer.
     pub fn clear(&mut self) {
@@ -244,11 +299,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         let max_size = cmp::min(self.len(), capacity - self.read_at);
         let (size, result) = f(&mut self.storage[self.read_at..self.read_at + max_size]);
         assert!(size <= max_size);
-        self.read_at = if capacity > 0 {
-            (self.read_at + size) % capacity
-        } else {
-            0
-        };
+        self.read_at = if capacity > 0 { (self.read_at + size) % capacity } else { 0 };
         self.length -= size;
         (size, result)
     }
@@ -438,38 +489,24 @@ mod test {
     #[test]
     fn test_buffer_enqueue_dequeue_one_with() {
         let mut ring = RingBuffer::new(vec![0; 5]);
-        assert_eq!(
-            ring.dequeue_one_with(|_| -> Result::<(), ()> { unreachable!() }),
-            Err(Empty)
-        );
+        assert_eq!(ring.dequeue_one_with(|_| -> Result::<(), ()> { unreachable!() }), Err(Empty));
 
         ring.enqueue_one_with(Ok::<_, ()>).unwrap().unwrap();
         assert!(!ring.is_empty());
         assert!(!ring.is_full());
 
         for i in 1..5 {
-            ring.enqueue_one_with(|e| Ok::<_, ()>(*e = i))
-                .unwrap()
-                .unwrap();
+            ring.enqueue_one_with(|e| Ok::<_, ()>(*e = i)).unwrap().unwrap();
             assert!(!ring.is_empty());
         }
         assert!(ring.is_full());
-        assert_eq!(
-            ring.enqueue_one_with(|_| -> Result::<(), ()> { unreachable!() }),
-            Err(Full)
-        );
+        assert_eq!(ring.enqueue_one_with(|_| -> Result::<(), ()> { unreachable!() }), Err(Full));
 
         for i in 0..5 {
-            assert_eq!(
-                ring.dequeue_one_with(|e| Ok::<_, ()>(*e)).unwrap().unwrap(),
-                i
-            );
+            assert_eq!(ring.dequeue_one_with(|e| Ok::<_, ()>(*e)).unwrap().unwrap(), i);
             assert!(!ring.is_full());
         }
-        assert_eq!(
-            ring.dequeue_one_with(|_| -> Result::<(), ()> { unreachable!() }),
-            Err(Empty)
-        );
+        assert_eq!(ring.dequeue_one_with(|_| -> Result::<(), ()> { unreachable!() }), Err(Empty));
         assert!(ring.is_empty());
     }
 

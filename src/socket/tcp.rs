@@ -7,6 +7,8 @@ use core::fmt::Display;
 use core::task::Waker;
 use core::{cmp, fmt, mem};
 
+use managed::ManagedSlice;
+
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
 use crate::socket::{Context, PollAt};
@@ -555,6 +557,15 @@ impl<'a> Socket<'a> {
             #[cfg(feature = "async")]
             tx_waker: WakerRegistration::new(),
         }
+    }
+
+    pub fn try_defrag(&mut self) {
+        self.tx_buffer.try_defrag();
+        self.rx_buffer.try_defrag();
+    }
+    pub fn defrag<'z>(&mut self, slice: &mut ManagedSlice<'z, u8>) {
+        self.tx_buffer.defrag_expensive(slice);
+        self.rx_buffer.defrag_expensive(slice);
     }
 
     /// Enable or disable TCP Timestamp.
